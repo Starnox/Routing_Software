@@ -1,0 +1,5 @@
+router*
+!router.c
+!router_lab4_example.c
+__pycache__
+hosts_output
