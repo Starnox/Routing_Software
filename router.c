@@ -1,5 +1,6 @@
 #include "queue.h"
 #include "skel.h"
+#include "trie.h"
 
 #define MAX_NUM_ADDRESSES 100005
 #define ARP_TABLE_LOCATION "arp_table.txt"
@@ -52,6 +53,21 @@ struct arp_entry* get_next_hop(uint32_t dest_ip, struct arp_entry* arp_table, in
 }
 // TODO implement a more efficient search
 
+TrieNodePointer create_routing_trie(struct route_table_entry *rtable, int rtable_len){
+	TrieNodePointer newTrie = InitialiseTrieNode();
+	
+	if(newTrie == NULL)
+	{
+		fprintf(stderr, "Error while initialising");
+		return NULL;
+	}
+
+	for (size_t i = 0; i < rtable_len; i++) {
+		InsertNode(newTrie, &rtable[i]);
+	}
+	
+	return newTrie;
+}
 
 int main(int argc, char *argv[])
 {
@@ -61,6 +77,7 @@ int main(int argc, char *argv[])
 	// Do not modify this line
 	init(argc - 2, argv + 2);
 
+
 	// extract the routing table from the argument list -> argv[1]
 	char *routing_table_location = argv[1];
 
@@ -68,6 +85,22 @@ int main(int argc, char *argv[])
 	struct route_table_entry* rtable = malloc(sizeof(struct route_table_entry) * MAX_NUM_ADDRESSES);
 	int rtable_length = read_rtable(routing_table_location, rtable);
 
+	// initialise trie
+	TrieNodePointer routing_trie = create_routing_trie(rtable, rtable_length);
+
+	// TODO Delete this test
+	/*
+	char *testAddress = "192.73.207.90";
+	struct in_addr test_addr;
+	inet_aton(testAddress, &test_addr);
+	
+	struct route_table_entry *test = SearchTrie(routing_trie, test_addr);
+	if(test == NULL)
+		printf("NULL\n");
+	test_addr.s_addr = test->prefix;
+	printf("%s\n", inet_ntoa(test_addr));
+	*/
+	
 	// declare and initialise the arp table
 	struct arp_entry *arp_table = malloc(sizeof(struct arp_entry) * 100);
 	int arp_table_legth = parse_arp_table(ARP_TABLE_LOCATION, arp_table);
@@ -103,7 +136,12 @@ int main(int argc, char *argv[])
 			dest_ip.s_addr = ip_header->daddr;
 
 			// get the best route using the algorithm we wrote earlier
-			struct route_table_entry* best_route = get_best_route(dest_ip, rtable, rtable_length);
+
+			// O(n) algorithm
+			//struct route_table_entry* best_route = get_best_route(dest_ip, rtable, rtable_length);
+
+			// search using trie
+			struct route_table_entry* best_route = SearchTrie(routing_trie, dest_ip);
 
 			// if we haven't found any valid route we drop the packet
 			if(best_route == NULL)
