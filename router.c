@@ -61,6 +61,7 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	packet *new_packet = (packet *) malloc(sizeof(packet));
 	// add the interface to the packet
 	new_packet->interface = interface;
+	new_packet->len = 42; // manually calculated
 
 	// set FF:FF:FF:FF:FF:FF as the destionation mac (broadcast)
 	struct ether_header *eth_header =  (struct ether_header *) malloc(sizeof(struct ether_header));
@@ -74,19 +75,19 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	memcpy(eth_header->ether_shost, router_mac, sizeof(router_mac));
 
 	// set ether type
-	eth_header->ether_type = ETHERTYPE_ARP;
+	eth_header->ether_type = htons(ETHERTYPE_ARP);
 
 	// add the frame to the packet
-	memcpy(new_packet, eth_header, sizeof(struct ether_header));
+	memcpy(new_packet->payload, eth_header, sizeof(struct ether_header));
 
-	// TODO create an arp frame
 	struct arp_header *arp_h = (struct arp_header *) malloc(sizeof(struct arp_header));
 
-	arp_h->htype = 1;
-	arp_h->ptype = ETHERTYPE_IP;
+	// set necessary info for the arp frame
+	arp_h->htype = htons(1);
+	arp_h->ptype = htons(ETHERTYPE_IP);
 	arp_h->hlen = 6;
 	arp_h->plen = 4;
-	arp_h->op = 1;
+	arp_h->op = htons(1);
 	memcpy(arp_h->sha, router_mac, sizeof(router_mac));
 
 	char * char_router_address = get_interface_ip(interface);
@@ -100,7 +101,7 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	memset(arp_h->tha, 0, sizeof(router_mac));
 	arp_h->tpa = dest_ip;
 
-	memcpy(new_packet + sizeof(struct ether_header), arp_h, sizeof(struct arp_header));
+	memcpy(new_packet->payload + sizeof(struct ether_header), arp_h, sizeof(struct arp_header));
 
 	return new_packet;
 
@@ -141,11 +142,12 @@ void update_and_send(packet *m, struct iphdr *ip_header,struct ether_header *eth
 
 	// set the interface of the packet
 	m->interface = best_route->interface;
-
+	
 	// sending the packet on the specified interface
 	send_packet(m);
 }
 
+// TODO create arp request only one time
 
 void forward_ipv4_packet(packet *pckt, TrieNodePointer routing_trie, struct arp_entry *arp_table,
 						int arp_table_length, queue pckt_queue, struct ether_header *eth_header){
@@ -184,7 +186,12 @@ void forward_ipv4_packet(packet *pckt, TrieNodePointer routing_trie, struct arp_
 		// create arp request and add the packet to the queue
 		packet * arp_request = create_arp_request(best_route->next_hop, best_route->interface);
 		send_packet(arp_request);
-		queue_enq(pckt_queue, (void *) pckt);
+		//free(arp_request); // free the memory for the packet created
+
+		packet *pckt_to_add = (packet *) malloc(sizeof(packet));
+		memcpy(pckt_to_add, pckt, sizeof(packet));
+		queue_enq(pckt_queue, (void *) pckt_to_add);
+		
 	}
 	else{
 		update_and_send(pckt, ip_header, eth_header, best_route, next_hop);
@@ -230,32 +237,29 @@ int main(int argc, char *argv[])
 	// declare and initialise the arp table
 
 	// this is for the one already given
-	
+	/*
 	struct arp_entry *arp_table = malloc(sizeof(struct arp_entry) * 100);
 	int arp_table_length = parse_arp_table(ARP_TABLE_LOCATION, arp_table);
-	
+	*/
 
 	queue pckt_queue = queue_create();
 
 	// create a dynamic arp table
 
-	/*
+	
 	struct arp_entry *arp_table = malloc(sizeof(struct arp_entry) * 100);
 	int arp_table_length = 0;
-	*/
+	
 
 	while (1) {
 		rc = get_packet(&m);
 		DIE(rc < 0, "get_packet");
 
 		// The code for basic forwarding will be very similar to the one given for lab4
-
-	
 		struct ether_header *eth_header = (struct ether_header *) m.payload;
 
 		// declare the ip header and destination ip
 		
-
 		// TODO check if the packet is malformed
 		//get_interface_mac(best_route->interface, eth_header->ether_shost);
 		uint8_t router_mac[ETH_ALEN];
@@ -281,7 +285,6 @@ int main(int argc, char *argv[])
 				continue;
 		*/
 
-
 		// check if the packet recieved is if type Ethertype_IPV4
 
 		
@@ -289,29 +292,54 @@ int main(int argc, char *argv[])
 			forward_ipv4_packet(&m, routing_trie, arp_table, arp_table_length, pckt_queue, eth_header);
 		}
 		// packet is of type arp
-		// else if(ntohs(eth_header->ether_type) == ETHERTYPE_ARP){
-		// 	// extract the arp header
-		// 	struct arp_header *arp_h = (struct arp_header *) (m.payload + sizeof(struct arp_header));
-
-		// 	// if it is arp request we need to forward it
-		// 	if(arp_h->op == 1)
-		// 		continue;
+		else if(ntohs(eth_header->ether_type) == ETHERTYPE_ARP){
+			// extract the arp header
+			struct arp_header *arp_h = (struct arp_header *) (m.payload + sizeof(struct ether_header));
+			// if it is arp request we need to forward it
+			if(ntohs(arp_h->op) == 1){
+				continue;
+			}
 			
-		// 	// set the entry in our table
-		// 	arp_table[arp_table_length].ip = arp_h->spa;
-		// 	memcpy(arp_table + arp_table_length, arp_h->sha, 6);
-		// 	// increment the size
-		// 	arp_table_length++;
+			// set the entry in our table
+			arp_table[arp_table_length].ip = arp_h->spa;
 
-		// 	// as long as the queue is not empty
-		// 	while(!queue_empty(pckt_queue))
-		// 	{
-		// 		// extract packet and check if we have it mapped in our cache
-		// 		packet *curr_packet = (packet *) queue_deq(pckt_queue);
-		// 		forward_ipv4_packet(curr_packet, routing_trie, arp_table, arp_table_length, pckt_queue, eth_header);
+			for(int i =0 ; i< 6 ; ++i){
+				arp_table[arp_table_length].mac[i] = arp_h->sha[i];
+			}
 
-		// 	}
-		// }
+			// increment the size
+			arp_table_length++;
+
+			
+			// as long as the queue is not empty
+			queue new_queue = queue_create();
+			while(!queue_empty(pckt_queue))
+			{
+				struct iphdr *ip_header;
+				struct in_addr dest_ip;
+				// extract packet and try to forward it
+				packet *curr_packet = (packet *) queue_deq(pckt_queue);
+				printf("Test: %u\n", curr_packet->len);
+				ip_header = (struct iphdr *) (curr_packet->payload + sizeof(struct ether_header));
+				dest_ip.s_addr = ip_header->daddr;
+				printf("%u\n", ip_header->daddr);
+
+				struct route_table_entry* best_route = SearchTrie(routing_trie, dest_ip);
+				if(best_route == NULL)
+					continue;
+
+				struct arp_entry* next_hop = get_next_hop(best_route->next_hop, arp_table, arp_table_length);
+				if(next_hop == NULL){
+					queue_enq(new_queue, (void *) curr_packet);
+					continue;
+				}
+				printf("here\n");
+				update_and_send(curr_packet, ip_header, eth_header, best_route, next_hop);
+			}
+			
+			if(!queue_empty(new_queue))
+				pckt_queue = new_queue;
+		}
 
 	}
 }
