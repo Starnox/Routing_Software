@@ -98,7 +98,7 @@ struct route_table_entry* SearchTrie(TrieNodePointer node, struct in_addr addr)
     return NULL;
 }
 
-/*
+
 // check if the node has any sons
 int IsEmpty(TrieNodePointer node)
 {
@@ -110,84 +110,3 @@ int IsEmpty(TrieNodePointer node)
     }
     return 1;
 }
-
-
-TrieNodePointer Remove(TrieNodePointer *node, char *key, int depth, FreeFunction freeFunc)
-{
-    if(*node == NULL)
-        return NULL;
-
-    // if it is the last character of the key
-    if(depth == strlen(key))
-    {
-        // if the node is not the prefix to any other key
-        if(IsEmpty(*node))
-        {
-            DeleteTrie(node, 1, freeFunc);
-            *node = NULL;
-        }
-
-        // if it is the end of a key
-        if(*node != NULL && (*node)->isEnd)
-        {
-            // if we want to free the information
-            if(freeFunc != NULL)
-            {
-                freeFunc(&((*node)->endPointer));
-            }
-            // the node is no more the end of a key
-            (*node)->isEnd = 0;
-        }
-        return *node;
-    }
-    int index = GetIndexInAlphabet(key[depth]);
-
-    (*node)->sons[index] = Remove(&(*node)->sons[index], key, depth + 1, freeFunc);
-
-    // if the node does not have any child and is not end of another word
-    if(IsEmpty(*node) && (*node)->isEnd == 0)
-    {
-        DeleteTrie(node, 1, freeFunc);
-        *node = NULL;
-    }
-    return *node;
-}
-
-
-void DeleteTrie(TrieNodePointer *trieNode, int type, FreeFunction freeFunc)
-{
-    if(*trieNode == NULL)
-        return;
-
-    int i;
-
-    if((*trieNode)->isEnd)// if it is end of word
-    {
-        // if it is of type T2
-        if(type == 2)
-        {
-            // then delete the type 1 trie associated with it
-            DeleteTrie((TrieNodePointer *) &((*trieNode)->endPointer), 1, freeFunc);
-        }
-        else
-        {
-            if(freeFunc != NULL) // if we want to free the info
-                freeFunc(&((*trieNode)->endPointer));
-        }
-
-    }
-
-    for(i = 0; i< 2; ++i)
-    {
-        // if the node exists
-        if((*trieNode)->sons[i])
-        {
-            // go deeper in the trie with dfs approach
-            DeleteTrie(&((*trieNode)->sons[i]), type, freeFunc);
-        }
-    }
-
-    free(*trieNode);
-    *trieNode = NULL;
-}
-*/

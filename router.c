@@ -55,16 +55,75 @@ struct arp_entry* get_next_hop(uint32_t dest_ip, struct arp_entry* arp_table, in
 	return NULL;
 }
 
+packet *create_arp_reply(packet m){
+	// get the headers of the package
+	struct ether_header *eth_header = (struct ether_header *) m.payload;
+	struct arp_header *arp_h = (struct arp_header *)(m.payload + sizeof(struct ether_header));
+
+	char *char_router_address;
+	char_router_address = get_interface_ip(m.interface);
+	uint32_t router_address;
+	int code = inet_pton(AF_INET, char_router_address, &router_address);
+	if(code != 1)
+		printf("Error while converting address");
+
+	packet *new_packet = (packet *) malloc(sizeof(packet));
+	// add the interface to the packet
+	new_packet->interface = m.interface;
+	new_packet->len = sizeof(struct ether_header) + sizeof(struct arp_header);
+
+	memset(new_packet->payload, 0 , sizeof(new_packet->payload));
+
+	// declare the ethernet and arp headers and point them at the right positions
+	struct ether_header *eth_header_r = (struct ether_header *) new_packet->payload;
+	struct arp_header *arp_header_r = (struct arp_header *)(new_packet->payload +
+									sizeof(struct ether_header));
+	
+	// fill the two headers information (similar to arp_request)
+
+	// ETHERNET
+	memcpy(eth_header_r->ether_dhost, eth_header->ether_shost, 6); // destination is the source of the package
+	get_interface_mac(m.interface, eth_header_r->ether_shost); // source is the router
+	eth_header_r->ether_type = htons(ETHERTYPE_ARP);
+
+	// ARP
+	arp_header_r->htype = htons(1);
+	arp_header_r->ptype = htons(ETHERTYPE_IP);
+	arp_header_r->hlen = 6;
+	arp_header_r->plen = 4;
+	arp_header_r->op = htons(2); // op for arp reply
+	
+	// extract the source MAC and source IP and put them now as target
+	memcpy(arp_header_r->tha, arp_h->sha, 6);
+	arp_header_r->tpa = arp_h->spa;
+
+	// set the source ip and MAC (router)
+	arp_header_r->spa = router_address;
+	get_interface_mac(m.interface, arp_header_r->sha);
+
+
+	// return the packet
+	return new_packet;
+}
+
 // creates and returns an arp request packet for the specified ip
 packet* create_arp_request(uint32_t dest_ip, int interface){
 	// initialise a new packet
 	packet *new_packet = (packet *) malloc(sizeof(packet));
+
+	// get router address
+	char * char_router_address = get_interface_ip(interface);
+	uint32_t router_address;
+	int code = inet_pton(AF_INET, char_router_address, &router_address);
+	if(code != 1)
+		printf("Error while converting address");
+
 	// add the interface to the packet
 	new_packet->interface = interface;
 	new_packet->len = sizeof(struct ether_header) + sizeof(struct arp_header);
 
 	// set FF:FF:FF:FF:FF:FF as the destionation mac (broadcast)
-	struct ether_header *eth_header =  (struct ether_header *) malloc(sizeof(struct ether_header));
+	struct ether_header *eth_header = (struct ether_header *) new_packet->payload;
 	memcpy(eth_header->ether_dhost, ether_broadcast, sizeof(ether_broadcast));
 	
 	// get the router mac address
@@ -77,10 +136,8 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	// set ether type
 	eth_header->ether_type = htons(ETHERTYPE_ARP);
 
-	// add the frame to the packet
-	memcpy(new_packet->payload, eth_header, sizeof(struct ether_header));
-
-	struct arp_header *arp_h = (struct arp_header *) malloc(sizeof(struct arp_header));
+	struct arp_header *arp_h = (struct arp_header *)(new_packet->payload +
+									sizeof(struct ether_header));
 
 	// set necessary info for the arp frame
 	arp_h->htype = htons(1);
@@ -90,19 +147,11 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	arp_h->op = htons(1); // op for arp request
 	memcpy(arp_h->sha, router_mac, sizeof(router_mac));
 
-	char * char_router_address = get_interface_ip(interface);
-	uint32_t router_address;
-	int code = inet_pton(AF_INET, char_router_address, &router_address);
-	if(code != 1)
-		printf("Error while converting address");
-
-		
 	arp_h->spa = router_address;
-	memset(arp_h->tha, 0, sizeof(router_mac));
+	memset(arp_h->tha, 0, sizeof(router_mac)); // target mac address is 00:00:00:00:00:00
 	arp_h->tpa = dest_ip;
 
-	memcpy(new_packet->payload + sizeof(struct ether_header), arp_h, sizeof(struct arp_header));
-
+	
 	return new_packet;
 }
 
@@ -185,7 +234,7 @@ void forward_ipv4_packet(packet *pckt, TrieNodePointer routing_trie, struct arp_
 		// create arp request and add the packet to the queue
 		packet * arp_request = create_arp_request(best_route->next_hop, best_route->interface);
 		send_packet(arp_request);
-		//free(arp_request); // free the memory for the packet created
+		free(arp_request); // free the memory for the packet created
 
 		packet *pckt_to_add = (packet *) malloc(sizeof(packet));
 		memcpy(pckt_to_add, pckt, sizeof(packet));
@@ -283,6 +332,9 @@ int main(int argc, char *argv[])
 			struct arp_header *arp_h = (struct arp_header *) (m.payload + sizeof(struct ether_header));
 			// if it is arp request we need to forward it
 			if(ntohs(arp_h->op) == 1){
+				packet *arp_reply = create_arp_reply(m);
+				send_packet(arp_reply);
+				free(arp_reply); // free the memory allocated for the packet
 				continue;
 			}
 			
@@ -305,10 +357,8 @@ int main(int argc, char *argv[])
 				struct in_addr dest_ip;
 				// extract packet and try to forward it
 				packet *curr_packet = (packet *) queue_deq(pckt_queue);
-				printf("Test: %u\n", curr_packet->len);
 				ip_header = (struct iphdr *) (curr_packet->payload + sizeof(struct ether_header));
 				dest_ip.s_addr = ip_header->daddr;
-				printf("%u\n", ip_header->daddr);
 
 				struct route_table_entry* best_route = SearchTrie(routing_trie, dest_ip);
 				if(best_route == NULL)
@@ -319,7 +369,6 @@ int main(int argc, char *argv[])
 					queue_enq(new_queue, (void *) curr_packet);
 					continue;
 				}
-				printf("here\n");
 				update_and_send(curr_packet, ip_header, eth_header, best_route, next_hop);
 			}
 			
