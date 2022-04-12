@@ -155,6 +155,84 @@ packet* create_arp_request(uint32_t dest_ip, int interface){
 	return new_packet;
 }
 
+packet *create_icmp_packet(int type_of_packet, packet m){
+
+	// extract headers
+	struct ether_header *eth_header = (struct ether_header *) m.payload;
+	struct iphdr *ip_header = (struct iphdr *) (m.payload + sizeof(struct ether_header));
+	struct icmphdr *icmp_header = (struct icmphdr *) (m.payload
+									 + sizeof(struct ether_header) + sizeof(struct iphdr));
+
+	// get router ip address
+	char *char_router_address;
+	char_router_address = get_interface_ip(m.interface);
+	uint32_t router_address;
+	int code = inet_pton(AF_INET, char_router_address, &router_address);
+	if(code != 1)
+		printf("Error while converting address");
+
+	// create the packet
+	packet *new_packet = (packet *) malloc(sizeof(packet));
+	memset(new_packet->payload, 0 , sizeof(new_packet->payload));
+
+	// set the fields
+	new_packet->interface = m.interface;
+	new_packet->len = sizeof(struct ether_header) + sizeof(struct iphdr)
+					 + sizeof(struct icmphdr);
+
+	// point the headers to the correct positions
+	struct ether_header *ether_header_r = (struct ether_header *) new_packet->payload;
+	struct iphdr *ip_header_r = (struct iphdr*) (new_packet->payload + sizeof(struct ether_header));
+	struct icmphdr *icmp_header_r = (struct icmphdr *) (new_packet->payload
+									 + sizeof(struct ether_header) + sizeof(struct iphdr));
+
+
+	// fill ether header information
+	// the destination will be the device that sent the message
+	memcpy(ether_header_r->ether_dhost, eth_header->ether_shost, 6);
+
+	// the source will be the router (in this case the reciever of the original packet)
+	memcpy(ether_header_r->ether_shost, eth_header->ether_dhost, 6);
+	ether_header_r->ether_type = htons(ETHERTYPE_IP); // type ipv4
+
+	// fill ip header
+	ip_header_r->version = 4;
+	ip_header_r->ihl = 5;
+	ip_header_r->tos = 0;
+	ip_header_r->id = htons(25);
+	ip_header_r->ttl = ip_header->ttl;
+	ip_header_r->protocol = IPPROTO_ICMP;
+	ip_header_r->tot_len = htons(sizeof(struct iphdr) + sizeof(struct icmphdr));
+
+	// calculate checksum
+	ip_header_r->check = 0;
+	ip_header_r->check = ip_checksum((void *)ip_header_r, sizeof(struct iphdr));
+	
+	// set destination and source
+	ip_header_r->daddr = ip_header->saddr;
+	ip_header_r->saddr = router_address;
+
+	// fill icmp header
+	icmp_header_r->type = type_of_packet;
+	icmp_header_r->code = 0;
+
+	// depending on the type of packet we need to create we will update the fields
+	if(type_of_packet == ICMP_ECHOREPLY){
+		icmp_header_r->un.echo.sequence = icmp_header->un.echo.sequence;
+		icmp_header_r->un.echo.id = icmp_header->un.echo.id;
+	}
+	else{
+		icmp_header_r->un.echo.sequence = 0;
+		icmp_header_r->un.echo.id = 0;
+	}
+
+	// after all this is set we need to calculate the checksum
+	icmp_header_r->checksum = 0;
+	icmp_header_r->checksum = ip_checksum((void *)icmp_header_r, sizeof(struct icmphdr));
+
+	return new_packet;
+}
+
 // Route search using Trie (way more efficient)
 TrieNodePointer create_routing_trie(struct route_table_entry *rtable, int rtable_len){
 	TrieNodePointer newTrie = InitialiseTrieNode();
@@ -176,10 +254,11 @@ void update_and_send(packet *m, struct iphdr *ip_header,struct ether_header *eth
 				struct route_table_entry *best_route, struct arp_entry* next_hop ){
 	// decrement time to live
 	ip_header->ttl--;
-	// set checksum to 0 in order to recalculate it
-	ip_header->check = 0;
-	// recalculate checksum
-	ip_header->check = ip_checksum((void *)ip_header, sizeof(struct iphdr));
+
+	// recalculate checksum using rfc 1624 equation
+	// the method and code was found on https://www.rfc-editor.org/rfc/pdfrfc/rfc1141.txt.pdf
+	uint16_t new_check_sum = ntohs(ip_header->check) + 0x100;
+	ip_header->check = htons(new_check_sum + (new_check_sum >> 16));
 
 	// put in the ethernet header the new destination mac (it has 6 bytes)
 	memcpy(eth_header->ether_dhost, next_hop->mac, 6);
@@ -209,8 +288,13 @@ void forward_ipv4_packet(packet *pckt, TrieNodePointer routing_trie, struct arp_
 		return;
 
 	// if the time to live got to 0 then we also drop the packet
-	if(ip_header->ttl == 0)
+	if(ip_header->ttl <= 1){
+		// create time exceeded icmp packet and send it
+		packet *icmp_timeout = create_icmp_packet(ICMP_TIME_EXCEEDED, *pckt);
+		send_packet(icmp_timeout);
+		free(icmp_timeout);
 		return;
+	}
 
 	// get the destination ip
 	dest_ip.s_addr = ip_header->daddr;
@@ -224,8 +308,13 @@ void forward_ipv4_packet(packet *pckt, TrieNodePointer routing_trie, struct arp_
 	struct route_table_entry* best_route = SearchTrie(routing_trie, dest_ip);
 
 	// if we haven't found any valid route we drop the packet
-	if(best_route == NULL)
+	if(best_route == NULL){
+		// crete host unreacheable icmp packet and send it
+		packet *icmp_dest_unreach = create_icmp_packet(ICMP_DEST_UNREACH, *pckt);
+		send_packet(icmp_dest_unreach);
+		free(icmp_dest_unreach);
 		return;
+	}
 	
 	// gets the mac address of the next hop
 	struct arp_entry* next_hop = get_next_hop(best_route->next_hop, arp_table, arp_table_length);
@@ -250,11 +339,6 @@ int main(int argc, char *argv[])
 {
 	packet m;
 	int rc;
-
-	uint8_t ether_broadcast[ETH_ALEN];
-	for(int i = 0; i< ETH_ALEN; ++i)
-		ether_broadcast[i] = 0xff;
-
 	// Do not modify this line
 	init(argc - 2, argv + 2);
 
@@ -269,32 +353,9 @@ int main(int argc, char *argv[])
 	// initialise trie
 	TrieNodePointer routing_trie = create_routing_trie(rtable, rtable_length);
 
-	// TODO Delete this test
-	/*
-	char *testAddress = "192.73.207.90";
-	struct in_addr test_addr;
-	inet_aton(testAddress, &test_addr);
-	
-	struct route_table_entry *test = SearchTrie(routing_trie, test_addr);
-	if(test == NULL)
-		printf("NULL\n");
-	test_addr.s_addr = test->prefix;
-	printf("%s\n", inet_ntoa(test_addr));
-	*/
-	
-	// declare and initialise the arp table
-
-	// this is for the one already given
-	/*
-	struct arp_entry *arp_table = malloc(sizeof(struct arp_entry) * 100);
-	int arp_table_length = parse_arp_table(ARP_TABLE_LOCATION, arp_table);
-	*/
-
 	queue pckt_queue = queue_create();
 
-	// create a dynamic arp table
-
-	
+	// create a dynamic arp table (stored in RAM)
 	struct arp_entry *arp_table = malloc(sizeof(struct arp_entry) * 100);
 	int arp_table_length = 0;
 	
@@ -306,11 +367,16 @@ int main(int argc, char *argv[])
 		// The code for basic forwarding will be very similar to the one given for lab4
 		struct ether_header *eth_header = (struct ether_header *) m.payload;
 
-		// TODO check if the packet is malformed
-	
-
 		uint8_t router_mac[ETH_ALEN];
 		get_interface_mac(m.interface, router_mac);
+
+		char *char_router_address;
+		char_router_address = get_interface_ip(m.interface);
+		uint32_t router_address;
+		int code = inet_pton(AF_INET, char_router_address, &router_address);
+		if(code != 1)
+			printf("Error while converting address");
+
 
 
 		// TODO L2 validation -> check if this packet destination is this router
@@ -324,6 +390,21 @@ int main(int argc, char *argv[])
 
 		// check if the packet recieved is if type Ethertype_IPV4
 		if(ntohs(eth_header->ether_type) == ETHERTYPE_IP){
+			struct iphdr *ip_header = (struct iphdr *) (m.payload + sizeof(struct ether_header));
+			if(ip_header->protocol == IPPROTO_ICMP){
+				// extract icmp header
+				struct icmphdr *icmp_header = (struct icmphdr *) (m.payload
+									 + sizeof(struct ether_header) + sizeof(struct iphdr));
+				
+				if((icmp_header->type == ICMP_ECHO) && ip_header->daddr == router_address){
+					// create icmp package
+					packet *echo_reply = create_icmp_packet(ICMP_ECHOREPLY, m);
+					send_packet(echo_reply);
+					free(echo_reply);
+					continue;;
+				}
+			}
+
 			forward_ipv4_packet(&m, routing_trie, arp_table, arp_table_length, pckt_queue, eth_header);
 		}
 		// packet is of type arp

@@ -5,3 +5,4 @@ __pycache__
 hosts_output
 .vscode
 peda*
+*.o
