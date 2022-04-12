@@ -350,9 +350,8 @@ int main(int argc, char *argv[])
 	struct route_table_entry* rtable = malloc(sizeof(struct route_table_entry) * MAX_NUM_ADDRESSES);
 	int rtable_length = read_rtable(routing_table_location, rtable);
 
-	// initialise trie
+	// initialise trie and queue
 	TrieNodePointer routing_trie = create_routing_trie(rtable, rtable_length);
-
 	queue pckt_queue = queue_create();
 
 	// create a dynamic arp table (stored in RAM)
@@ -367,9 +366,11 @@ int main(int argc, char *argv[])
 		// The code for basic forwarding will be very similar to the one given for lab4
 		struct ether_header *eth_header = (struct ether_header *) m.payload;
 
+		// retrieve router mac
 		uint8_t router_mac[ETH_ALEN];
 		get_interface_mac(m.interface, router_mac);
 
+		// retrieve router address
 		char *char_router_address;
 		char_router_address = get_interface_ip(m.interface);
 		uint32_t router_address;
@@ -377,41 +378,37 @@ int main(int argc, char *argv[])
 		if(code != 1)
 			printf("Error while converting address");
 
-
-
-		// TODO L2 validation -> check if this packet destination is this router
-		// or broadcast
-
-		/*
-		if((memcmp(eth_header->ether_dhost, router_mac, sizeof(router_mac)) != 0 )
-				&& (memcmp(eth_header->ether_dhost, ether_broadcast, sizeof(ether_broadcast)) != 0 ))
-				continue;
-		*/
-
 		// check if the packet recieved is if type Ethertype_IPV4
 		if(ntohs(eth_header->ether_type) == ETHERTYPE_IP){
+
 			struct iphdr *ip_header = (struct iphdr *) (m.payload + sizeof(struct ether_header));
+
+			// if we also have an icmp protocol stacked on top of the ip header
 			if(ip_header->protocol == IPPROTO_ICMP){
+
 				// extract icmp header
 				struct icmphdr *icmp_header = (struct icmphdr *) (m.payload
 									 + sizeof(struct ether_header) + sizeof(struct iphdr));
 				
+				// if the packet is of type echo and was sent to us (the router)
 				if((icmp_header->type == ICMP_ECHO) && ip_header->daddr == router_address){
-					// create icmp package
+
+					// create icmp reply packet, send it and free the memory
 					packet *echo_reply = create_icmp_packet(ICMP_ECHOREPLY, m);
 					send_packet(echo_reply);
 					free(echo_reply);
 					continue;;
 				}
 			}
-
+			// if is only ipv4 we'll do basic forwarding
 			forward_ipv4_packet(&m, routing_trie, arp_table, arp_table_length, pckt_queue, eth_header);
 		}
 		// packet is of type arp
 		else if(ntohs(eth_header->ether_type) == ETHERTYPE_ARP){
 			// extract the arp header
 			struct arp_header *arp_h = (struct arp_header *) (m.payload + sizeof(struct ether_header));
-			// if it is arp request we need to forward it
+
+			// if it is arp request we need to reply
 			if(ntohs(arp_h->op) == 1){
 				packet *arp_reply = create_arp_reply(m);
 				send_packet(arp_reply);
@@ -428,7 +425,6 @@ int main(int argc, char *argv[])
 
 			// increment the size
 			arp_table_length++;
-
 			
 			// as long as the queue is not empty
 			queue new_queue = queue_create();
@@ -446,6 +442,7 @@ int main(int argc, char *argv[])
 					continue;
 
 				struct arp_entry* next_hop = get_next_hop(best_route->next_hop, arp_table, arp_table_length);
+				// if still no luck, enque it again and try later
 				if(next_hop == NULL){
 					queue_enq(new_queue, (void *) curr_packet);
 					continue;
