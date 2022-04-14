@@ -1,5 +1,5 @@
 # Communication Protocols
-### Student: Mihailescu Eduard-Florin 
+### Student: Mihailescu Eduard-Florin 322CB
 
 ## Overview
 This code is meant to solve a challenge given by the Communication Protocols team
