@@ -6,3 +6,5 @@ hosts_output
 .vscode
 peda*
 *.o
+.DS_STORE
+*.zip
